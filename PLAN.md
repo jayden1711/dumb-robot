@@ -120,10 +120,16 @@ Courses are built by `dumbrobot/worlds.py` as extra geoms on the same spec. Each
 finish rule, time limit, terrain friction, and an ordered list of **segments** (name, x-interval) used for per-segment
 logs. Progress is the furthest distance along the course path (x in course 1; path distance in the maze).
 
-Staged set (M0 builds only course 1):
+Staged set (M0 built course 1, M1 adds course 2):
 
 1. **bumps**: 0.9 m wide lane with side walls, 5 round bumps of increasing height (8 to 40 mm), 25 s limit.
-2. **walls/corridor** (M1): a corridor with a perpendicular wall, then a chicane.
+2. **walls/corridor** (M1): a 1.1 m wide corridor. A perpendicular wall spans from the right side wall to just past the
+   centre line, leaving a gap on the left; then two slanted baffles (a two-turn chicane). A centred wall with gaps on both
+   sides was tried first and no valid design could pass it (a symmetric blind robot driving at a symmetric wall just
+   stalls), so the wall is one-sided, which lets a forward-pointing wedge deflect around its edge (the CRITIQUES 4 headroom rule).
+   Progress is the arc length along a centre-line path threaded through the gaps, measured by the nearest path sample within a
+   window around the furthest progress so far (a robot cannot be credited across a wall). Segments: approach, wall,
+   corridor, chicane_1, chicane_2, run_out. Geometry constants are in `worlds.py`.
 3. **simple maze** (M2): grid maze, 3 junctions, one dead end; progress is geodesic distance to the exit.
 4. **ramp + gap** (M2): ramp up, a flat platform, a gap narrower than the longest allowed body.
 
@@ -178,7 +184,18 @@ Fairness rules:
 - Same genome schema (parametric arm), same validity gate, same scorer, same course set.
 - The LLM sees per-segment failure logs; the baselines see the scalar only. This asymmetry is the thing under test and
   is stated in every report. An extra ablation gives the LLM the scalar only.
-- LLM batches: the LLM proposes in generations of 1 to 4 children; the budget counts children, not generations.
+- LLM batches: the LLM proposes in generations of 1 to 4 children; the budget counts children, not generations. A slot the
+  LLM leaves empty or fills with a malformed reply is charged as an invalid proposal (`no_proposal`). The LLM arm's seed
+  design (the default template, whose log it needs to start) is evaluated as proposal 1 and charged to its budget; the
+  baselines get no such evaluation, so this slightly favours the baselines. CMA-ES starts from the same default design.
+- M1 experiment: courses bumps and corridor, budget 64 proposals per run, train jitter seeds 0 and 1, held-out jitter seeds
+  1000 to 1003, 10 seeds per baseline, as many LLM seeds as the subscription allows (stated in the report, never pooled).
+  The winner of a run is its best train score; only its held-out score is used for claims. The report also re-runs each
+  winner under a halved timestep, the PGS solver and plus/minus 20 percent friction (CRITIQUES 3) and tags a winner
+  `sim-artefact` if a perturbed score falls below half of its nominal score.
+- What the LLM is told that the baselines are not: the per-segment failure logs (the asymmetry under test) and a
+  plain-words description of the task (course geometry, scoring, validity rules, the physical facts). That second item is
+  also a privilege the baselines lack, and the scalar-only ablation keeps it, so the ablation isolates the logs only.
 - Winner's-curse control: only the held-out re-evaluation is used for claims.
 - Statistics: report the median and interquartile range of best-so-far curves across seeds, plus a rank test between
   arms; "the LLM wins" requires beating both baselines on held-out score at equal budget, not on one lucky seed.
@@ -202,8 +219,12 @@ results/runs/<experiment>/<arm>/seed_<k>/
 results/runs/<experiment>/findings.md   # mechanical tricks the designer invented (section 10)
 ```
 
-`trace.npz` is the "short sim clip": it is rendered later (M3) through the arena Blender tools, so no video is made during
-optimization.
+`trace.npz` is the clip source. M1 also renders a short CPU clip of each generation's best child (`gen_NNN/clip_<course>.gif`,
+top view plus side view, own software rasterizer, single-threaded, no encoder dependency); the Blender renders stay in M3.
+Per generation the loop also writes `prompt.txt`, `designer_reply.txt` (emails redacted) and `summary.json`; the
+designer's stated reason is in each proposal's `reasoning.md` and the exact scored source in `body.py`.
+Every proposal is cached, so any run resumes without re-simulating or re-charging; a designer reply is saved before its
+children are evaluated.
 
 ## 9. Per-segment failure log
 
@@ -217,8 +238,12 @@ touching) and gives no design advice.
 
 Claude through the subscription CLI only (`claude -p`), never a paid API. Isolation per call: working directory is a fresh
 directory under `/var/tmp`, `--setting-sources project,local` (the fresh directory has none, so no user or project memory
-loads), tools disabled (`--tools ""`; the prompt carries everything the loop needs), and any email address is redacted
-from every saved reply. The prompt contains the schema, the current best body scripts, their score and failure
+loads), tools disabled (`--tools ""`; the prompt carries everything the loop needs), no MCP (`--strict-mcp-config` with an
+empty config), no session persistence, a short fixed system prompt, and any email address is redacted from every saved
+reply and probe. All writes go through `safeio`, which reads each file back and stops the run if an address survives.
+Two arms: `llm_param` (the design JSON per the schema; the fair fight), `llm_free` (a whole edited body script, run in a
+subprocess with a wall-clock limit after a static import/name check; a guard, not a sandbox), and the ablation
+`llm_param_scalar` (score only, no failure logs). The prompt contains the schema, the current best body scripts, their score and failure
 summaries, and asks for edits plus a one-sentence reason each. Batches of `claude -p` calls are launched by the organizer
 from a prepared runner script (written to HANDOFF.md under "Organizer: run these") if the session permission system
 refuses them. A findings list is maintained by hand-reviewing reasoning against failure logs after each run; each entry
@@ -228,8 +253,10 @@ held-out world.
 ## 11. Baselines (M1)
 
 - **Random search**: `schema.sample` per proposal, same budget.
-- **CMA-ES** (`cma` package): unit-cube parametrization, population 8, initial sigma 0.3, fixed seeds, same budget,
-  invalid proposals get a fixed bad fitness (the worst valid score seen, or 0) and still consume budget.
+- **CMA-ES** (`cma` package, version pinned in THIRD_PARTY.md and logged): unit-cube parametrization, population 8, initial
+  sigma 0.3, start point = the default design (the same design the LLM is shown first), fixed seeds, same budget, invalid
+  proposals get a fixed bad fitness (the worst valid score seen so far, or 0) and still consume budget. A final partial
+  generation is evaluated but not told.
 
 ## 12. Tests
 
@@ -238,6 +265,15 @@ design; deterministic builds and episodes; motor model (steady-state wheel speed
 stall); energy accounting on a synthetic trace; flip counter on synthetic orientations; segment bookkeeping; scoring
 formula on hand-made episode results; a hand-made large-wheel design completes course 1 and a small-wheel one fails at a
 known bump; Brain A constant output.
+
+M1 tests (`tests/test_m1.py`, `tests/test_render.py`): corridor segment bookkeeping and path progress; headroom (default
+fails the corridor, a hand-made wedge finishes held-out seeds); redaction and the refuse-to-continue check; the `claude`
+command line is isolated and runs in a fresh empty `/var/tmp` directory (subprocess mocked); reply parsing (good,
+malformed, free-form); the static script guard and the wall-clock limit; budget accounting (invalid and missing children are
+charged, the budget is never exceeded); resume of random search, CMA-ES and the LLM loop without new charges or new
+designer calls; survival of a designer failure mid-run; the failure logs are in the prompt and absent in the scalar
+ablation; the optimizer code never touches `brains`; exact rank test; report end to end on tiny runs; GIF writer
+round trip. No test calls `claude`.
 
 ## 13. Visuals (M3)
 

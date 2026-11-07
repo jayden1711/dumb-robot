@@ -5,6 +5,7 @@ import math
 from dataclasses import dataclass, field
 
 import mujoco
+import numpy as np
 
 from .bodylib import TERRAIN_BIT
 
@@ -28,13 +29,47 @@ class Course:
     segments: list[Segment]
     terrain_mu: float = 0.8
     builder: callable = field(default=None, repr=False)
+    path: list | None = None  # centre-line waypoints [(x, y)]; progress is arc length along it (start_x + length so far)
+
+    def __post_init__(self):
+        self._ps = None
+        if self.path:
+            pts = [np.asarray(p, dtype=float) for p in self.path]
+            xs, ys, ss, s = [], [], [], self.start_x
+            for a, b in zip(pts[:-1], pts[1:]):
+                seg = float(np.linalg.norm(b - a))
+                n = max(1, int(math.ceil(seg / 0.01)))
+                for k in range(n):
+                    p = a + (b - a) * (k / n)
+                    xs.append(p[0]), ys.append(p[1]), ss.append(s + seg * k / n)
+                s += seg
+            xs.append(pts[-1][0]), ys.append(pts[-1][1]), ss.append(s)
+            self._px, self._py, self._ps = np.array(xs), np.array(ys), np.array(ss)
+
+    def waypoint_s(self) -> list[float]:
+        """Course coordinate s of each waypoint."""
+        out, s = [self.start_x], self.start_x
+        for a, b in zip(self.path[:-1], self.path[1:]):
+            s += math.hypot(b[0] - a[0], b[1] - a[1])
+            out.append(s)
+        return out
 
     @property
     def length(self) -> float:
         return self.finish_x - self.start_x
 
-    def progress(self, x: float, y: float = 0.0) -> float:
-        return x - self.start_x
+    def s_of(self, x: float, y: float, hint: float | None = None) -> float:
+        """Course coordinate of a point: x itself on straight courses; on a path course the nearest centre-line sample
+        within a window around `hint` (the furthest s so far), so a robot cannot be credited across a wall."""
+        if self._ps is None:
+            return x
+        i0 = 0 if hint is None else int(np.searchsorted(self._ps, hint))
+        lo, hi = max(0, i0 - 50), min(len(self._ps), i0 + 80)
+        j = lo + int(np.argmin((self._px[lo:hi] - x) ** 2 + (self._py[lo:hi] - y) ** 2))
+        return float(self._ps[j])
+
+    def progress(self, s: float, y: float = 0.0) -> float:
+        return s - self.start_x
 
     def segment_index(self, x: float) -> int:
         for i, s in enumerate(self.segments):
@@ -98,7 +133,48 @@ def flat_course() -> Course:
     return Course("flat", 0.0, 3.0, 5.0, 25.0, [Segment("flat", -1e9, 3.0)], builder=_flat)
 
 
-COURSES = {"bumps": bumps_course, "flat": flat_course}
+# ---- course 2: corridor with a perpendicular wall, then a two-baffle chicane -------------------------------------------
+CORR_HALF = 0.55  # inner half-width of the corridor
+CORR_END = 6.2
+PILLAR_X = 1.5  # perpendicular wall across the corridor from the right wall to PILLAR_Y1, gap on the left
+PILLAR_Y1 = 0.05
+BAFFLES = (  # slanted guide walls: (x_start, y_start, x_end, y_end); the second leans the other way
+    ((3.0, CORR_HALF), (3.6, -0.15)),
+    ((4.3, -CORR_HALF), (4.9, 0.15)),
+)
+CORR_PATH = [(0.25, 0.0), (1.1, 0.0), (1.5, 0.3), (1.95, 0.3), (2.9, 0.0), (3.6, -0.38), (4.2, -0.38), (4.9, 0.38),
+             (5.6, 0.0)]
+WALL_THICK, WALL_H = 0.01, 0.2  # half thickness, half height
+
+
+def _corridor(spec, course):
+    geoms: list = []
+    mu = course.terrain_mu
+    _floor(spec, geoms, mu)
+    L = CORR_END + 0.4
+    for sy in (+1, -1):
+        _terrain_geom(spec, geoms, mu, f"wall_{'l' if sy > 0 else 'r'}", GEOM.mjGEOM_BOX, [L / 2, WALL_THICK, WALL_H],
+                      (L / 2 - 0.2, sy * (CORR_HALF + WALL_THICK), WALL_H))
+    _terrain_geom(spec, geoms, mu, "pillar", GEOM.mjGEOM_BOX, [WALL_THICK, (PILLAR_Y1 + CORR_HALF) / 2, WALL_H],
+                  (PILLAR_X, (PILLAR_Y1 - CORR_HALF) / 2, WALL_H), rgba=[0.7, 0.4, 0.4, 1])
+    for i, ((x0, y0), (x1, y1)) in enumerate(BAFFLES):
+        length = math.hypot(x1 - x0, y1 - y0)
+        _terrain_geom(spec, geoms, mu, f"baffle_{i + 1}", GEOM.mjGEOM_BOX, [length / 2, WALL_THICK, WALL_H],
+                      ((x0 + x1) / 2, (y0 + y1) / 2, WALL_H), euler=[0, 0, math.atan2(y1 - y0, x1 - x0)],
+                      rgba=[0.7, 0.4, 0.4, 1])
+    return geoms
+
+
+def corridor_course() -> Course:
+    c = Course("corridor", CORR_PATH[0][0], 0.0, 25.0, 25.0, [], builder=_corridor, path=list(CORR_PATH))
+    S = c.waypoint_s()
+    c.finish_x = S[-1]
+    c.segments = [Segment("approach", -1e9, S[1]), Segment("wall", S[1], S[3]), Segment("corridor", S[3], S[4]),
+                  Segment("chicane_1", S[4], S[6]), Segment("chicane_2", S[6], S[7]), Segment("run_out", S[7], S[-1])]
+    return c
+
+
+COURSES = {"bumps": bumps_course, "corridor": corridor_course, "flat": flat_course}
 
 
 def get_course(name: str) -> Course:

@@ -12,6 +12,9 @@ against the installed package metadata.
 | pytest | tests | 9.2.0 | MIT [verify] |
 | Claude via the `claude` CLI | designer LLM (M1+), subscription CLI only | n/a | Anthropic terms of service, not a software dependency [verify] |
 
+No video encoder is used for the per-generation clips: ffmpeg and PIL are not installed on the machine, so
+`dumbrobot/render.py` is our own numpy software rasterizer and GIF writer (single-threaded, no dependency).
+
 Planned, not yet used:
 
 | Component | Use | Status |

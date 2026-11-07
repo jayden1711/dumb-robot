@@ -119,7 +119,7 @@ def run_episode(asm, brain, record_trace: bool = False) -> EpisodeResult:
     segs = [SegStat(s.name, s.x0, s.x1) for s in course.segments]
     flipc = FlipCounter()
     x_hist: list[float] = []
-    xmax = float(d.xpos[bid][0])
+    xmax = course.s_of(float(d.xpos[bid][0]), float(d.xpos[bid][1]))  # furthest course coordinate (x on straight courses)
     energy = 0.0
     stuck_clock = 0.0
     status = None
@@ -145,7 +145,7 @@ def run_episode(asm, brain, record_trace: bool = False) -> EpisodeResult:
         up_z = float(d.xmat[bid][8])
         heading = d.xmat[bid][[0, 3]]
         fwd_speed = float(vel[0] * heading[0] + vel[1] * heading[1])
-        xmax = max(xmax, float(pos[0]))
+        xmax = max(xmax, course.s_of(float(pos[0]), float(pos[1]), xmax))
         x_hist.append(xmax)
 
         power = sum(motor_power(float(d.actuator_force[i]), float(d.qvel[j]), stall, w0) for i, j in zip(act_ids, wj))
@@ -200,7 +200,7 @@ def run_episode(asm, brain, record_trace: bool = False) -> EpisodeResult:
         lo = max(s.x0, course.start_x)
         s.progress_m = max(0.0, min(xmax, s.x1) - lo)
         s.mean_speed = s.progress_m / s.duration_s if s.duration_s > 0 else 0.0
-    ending = {"x": float(d.xpos[bid][0]), "up_z": float(d.xmat[bid][8]) if status != "exploded" else float("nan")}
+    ending = {"x": float(d.xpos[bid][0]), "y": float(d.xpos[bid][1]), "up_z": float(d.xmat[bid][8]) if status != "exploded" else float("nan")}
     if status in ("stuck", "flipped_stuck", "timeout"):
         ending["contacts"] = _touching(m, d)
     trace = None
@@ -225,6 +225,6 @@ def summarize(res: EpisodeResult) -> str:
     if not res.done:
         e = res.ending
         c = e.get("contacts")
-        lines.append(f"  ended at x={e['x']:.2f}m, up-axis={e['up_z']:.2f}" +
+        lines.append(f"  ended at x={e['x']:.2f}m y={e.get('y', 0.0):.2f}m, up-axis={e['up_z']:.2f}" +
                      (f", touching: {', '.join(f'{a}-{b}' for a, b in c)}" if c else ""))
     return "\n".join(lines)
