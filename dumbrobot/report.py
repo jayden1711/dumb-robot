@@ -189,11 +189,13 @@ def build_report(exp_root: Path, with_perturb: bool = True, budget: int | None =
         L.append(f"| {n} | {r['score']:.3f} | " + " | ".join(f"{r['per_course'].get(c, float('nan')):.3f}" for c in COURSES) + " |")
     L += ["\n## Every run (nothing dropped)\n",
           "| arm | seed | proposals used/budget | complete | invalid | train best | held-out | held-out per course (finished/n) | "
-          "artefact | winner |", "|---|---|---|---|---|---|---|---|---|---|"]
+          "worst perturbed / nominal | artefact | winner |", "|---|---|---|---|---|---|---|---|---|---|---|"]
     for t in table:
         pc = ", ".join(f"{c}: {v['mean_score']:.2f} ({v['finished']}/{v['n']})" for c, v in t["per_course"].items())
+        n2 = t.get("nominal_2seeds") or 0.0
+        ratio = f"{min(t['perturbed'].values()) / n2:.2f}" if t.get("perturbed") and n2 > 0.05 else "-"
         L.append(f"| {t['arm']} | {t['seed']} | {t['used']}/{t['budget']} | {t['complete']} | {t['invalid']} | "
-                 f"{t['train'] if t['train'] is None else round(t['train'], 3)} | {t['score']:.3f} | {pc} | "
+                 f"{t['train'] if t['train'] is None else round(t['train'], 3)} | {t['score']:.3f} | {pc} | {ratio} | "
                  f"{t['artefact']} | {t['pid']} |")
     L += ["\n## Per arm: held-out score of the winners (median, IQR, min-max over seeds)\n",
           "| arm | seeds | median | Q1 | Q3 | min | max | median train best | median invalid frac | median sim-s | median wall-s |",
