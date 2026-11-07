@@ -1,0 +1,12 @@
+results
+logs
+runs
+clips
+.venv
+__pycache__/
+*.pyc
+weights
+CLAUDE.md
+.claude/
+HANDOFF.md
+ORGANIZER.md
